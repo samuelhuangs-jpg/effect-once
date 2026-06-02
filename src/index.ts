@@ -59,6 +59,11 @@ export interface OnceOptions {
   leaseMs?: number;
 }
 
+export interface WrapOptions<Args extends unknown[]> extends OnceOptions {
+  /** Derive the per-call key suffix from the wrapped function arguments. */
+  key?: (...args: Args) => string;
+}
+
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 
 export class OnceStore {
@@ -144,6 +149,24 @@ export class OnceStore {
     } finally {
       await this.releaseLock(lockPath);
     }
+  }
+
+  /**
+   * Return a callable that routes every invocation through `once`.
+   *
+   * By default the key is `${prefix}:${stableJson(args)}`; provide `key` when
+   * the logical unit of work is more precise than the full argument list.
+   */
+  wrap<Args extends unknown[], T>(
+    prefix: string,
+    fn: (...args: Args) => Promise<T> | T,
+    opts: WrapOptions<Args> = {},
+  ): (...args: Args) => Promise<OnceResult<T>> {
+    const { key: keyFn, ...onceOpts } = opts;
+    return async (...args: Args) => {
+      const suffix = keyFn ? keyFn(...args) : stableJson(args);
+      return this.once(`${prefix}:${suffix}`, () => fn(...args), onceOpts);
+    };
   }
 
   /** Current status of a key, or `"absent"` if never seen. */
@@ -255,4 +278,39 @@ export class OnceStore {
 /** Convenience factory. */
 export function createOnceStore(opts: OnceStoreOptions): OnceStore {
   return new OnceStore(opts);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value, new WeakSet()));
+}
+
+function sortJsonValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortJsonValue(item, seen));
+  if (!value || typeof value !== "object") return value;
+
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === "function") {
+    return sortJsonValue(toJSON.call(value), seen);
+  }
+
+  if (seen.has(value)) {
+    throw new TypeError(
+      "Cannot derive an effect-once key from circular arguments; provide a custom key",
+    );
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new TypeError(
+      "Cannot derive an effect-once key from non-plain arguments; provide a custom key",
+    );
+  }
+
+  seen.add(value);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = sortJsonValue((value as Record<string, unknown>)[key], seen);
+  }
+  seen.delete(value);
+  return sorted;
 }

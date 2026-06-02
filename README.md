@@ -82,6 +82,22 @@ Re-throws if `fn` throws (and leaves the key retryable).
 
 ### `store.status(key): Promise<"pending" | "done" | "failed" | "absent">`
 
+### `store.wrap(prefix, fn, { key?, leaseMs? })`
+
+Returns a callable that runs `fn` through `store.once` each time it is invoked.
+By default, the per-call key is derived from `prefix` plus a stable JSON string
+of the arguments; pass `key` to choose the logical unit of work explicitly.
+
+```ts
+const sendOnce = once.wrap(
+  "daily-digest",
+  async (day: string) => sendDigest(day),
+  { key: (day) => day },
+);
+
+await sendOnce(today); // uses key `daily-digest:${today}`
+```
+
 ### `store.reset(key): Promise<void>`
 
 Forget a key (marker + any stale lock).

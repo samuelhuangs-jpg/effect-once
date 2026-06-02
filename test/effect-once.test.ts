@@ -102,4 +102,97 @@ describe("OnceStore", () => {
     expect(removed).toBe(1);
     expect(await store.status("old")).toBe("absent");
   });
+
+  it("wraps a function and deduplicates by derived argument key", async () => {
+    const store = createOnceStore({ dir });
+    let calls = 0;
+    const sendOnce = store.wrap("daily-digest", async (day: string) => {
+      calls += 1;
+      return `sent:${day}`;
+    });
+
+    const first = await sendOnce("2026-05-31");
+    const duplicate = await sendOnce("2026-05-31");
+    const nextDay = await sendOnce("2026-06-01");
+
+    expect(first).toMatchObject({ ran: true, value: "sent:2026-05-31" });
+    expect(duplicate).toMatchObject({ ran: false, reason: "already-done" });
+    expect(nextDay.ran).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("wraps a function with a custom key function", async () => {
+    const store = createOnceStore({ dir });
+    let calls = 0;
+    const sendOnce = store.wrap(
+      "notify",
+      async (message: { id: string; text: string }) => {
+        calls += 1;
+        return message.text;
+      },
+      { key: (message) => message.id },
+    );
+
+    await sendOnce({ id: "m1", text: "hello" });
+    const duplicate = await sendOnce({ id: "m1", text: "hello again" });
+
+    expect(duplicate.ran).toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  it("derives stable default keys for reordered plain object arguments", async () => {
+    const store = createOnceStore({ dir });
+    let calls = 0;
+    const sendOnce = store.wrap("payload", async (_message: { id: string; text: string }) => {
+      calls += 1;
+      return calls;
+    });
+
+    const first = await sendOnce({ id: "m1", text: "hello" });
+    const duplicate = await sendOnce({ text: "hello", id: "m1" });
+
+    expect(first.ran).toBe(true);
+    expect(duplicate).toMatchObject({ ran: false, reason: "already-done" });
+    expect(calls).toBe(1);
+  });
+
+  it("uses toJSON values when deriving default keys", async () => {
+    const store = createOnceStore({ dir });
+    let calls = 0;
+    const sendOnce = store.wrap("dated", async (_day: Date) => {
+      calls += 1;
+      return calls;
+    });
+
+    await sendOnce(new Date("2026-05-31T00:00:00.000Z"));
+    const next = await sendOnce(new Date("2026-06-01T00:00:00.000Z"));
+
+    expect(next.ran).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("requires a custom key for non-plain default-key arguments", async () => {
+    const store = createOnceStore({ dir });
+    const sendOnce = store.wrap("map", async (_value: Map<string, string>) => "sent");
+
+    await expect(sendOnce(new Map([["id", "m1"]]))).rejects.toThrow(
+      "provide a custom key",
+    );
+  });
+
+  it("keeps wrapped failures retryable", async () => {
+    const store = createOnceStore({ dir });
+    let calls = 0;
+    const flakyOnce = store.wrap("flaky", async (id: string) => {
+      calls += 1;
+      if (calls === 1) throw new Error("boom");
+      return id;
+    });
+
+    await expect(flakyOnce("a")).rejects.toThrow("boom");
+    const retry = await flakyOnce("a");
+
+    expect(retry).toMatchObject({ ran: true, value: "a", status: "done" });
+    expect(calls).toBe(2);
+  });
 });
