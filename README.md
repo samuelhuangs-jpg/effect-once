@@ -130,6 +130,13 @@ export async function run() {
 Key choice matters: derive the key from the **logical unit of work** (task +
 date, or `chat.id + message_id` for inbound dedup), not from the run id.
 
+## Failure semantics
+
+For the full state machine, crash-recovery lease, concurrency/atomicity
+guarantees, and an honest account of what this does **not** cover (the
+crash-after-effect window, cross-host filesystems), see
+[`docs/failure-semantics.md`](./docs/failure-semantics.md).
+
 ## License
 
 MIT
